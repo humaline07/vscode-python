@@ -16,7 +16,7 @@ import {
     WorkspaceFolder,
 } from 'vscode';
 import { cloneDeep } from 'lodash';
-import { instance, mock, verify, when } from 'ts-mockito';
+import { anything, instance, mock, verify, when } from 'ts-mockito';
 import { IApplicationShell, ICommandManager, IWorkspaceService } from '../../../../client/common/application/types';
 import { PathUtils } from '../../../../client/common/platform/pathUtils';
 import { IPlatformService } from '../../../../client/common/platform/types';
@@ -80,6 +80,7 @@ suite('Set Interpreter Command', () => {
         workspace = TypeMoq.Mock.ofType<IWorkspaceService>();
         interpreterService = mock<IInterpreterService>();
         when(interpreterService.refreshPromise).thenReturn(undefined);
+        when(interpreterService.triggerRefresh(anything(), anything())).thenResolve();
         workspace.setup((w) => w.rootPath).returns(() => 'rootPath');
 
         configurationService.setup((x) => x.getSettings(TypeMoq.It.isAny())).returns(() => pythonSettings.object);

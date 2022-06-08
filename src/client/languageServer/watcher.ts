@@ -34,6 +34,9 @@ import { JediLSExtensionManager } from './jediLSExtensionManager';
 import { NoneLSExtensionManager } from './noneLSExtensionManager';
 import { PylanceLSExtensionManager } from './pylanceLSExtensionManager';
 import { ILanguageServerExtensionManager, ILanguageServerWatcher } from './types';
+import { LspNotebooksExperiment } from '../activation/node/lspNotebooksExperiment';
+
+const localize: nls.LocalizeFunc = nls.loadMessageBundle();
 
 const localize: nls.LocalizeFunc = nls.loadMessageBundle();
 
@@ -74,6 +77,7 @@ export class LanguageServerWatcher
         @inject(IFileSystem) private readonly fileSystem: IFileSystem,
         @inject(IExtensions) private readonly extensions: IExtensions,
         @inject(IApplicationShell) readonly applicationShell: IApplicationShell,
+        @inject(LspNotebooksExperiment) private readonly lspNotebooksExperiment: LspNotebooksExperiment,
         @inject(IDisposableRegistry) readonly disposables: IDisposableRegistry,
     ) {
         this.workspaceInterpreters = new Map();
@@ -84,6 +88,12 @@ export class LanguageServerWatcher
 
         disposables.push(
             this.workspaceService.onDidChangeWorkspaceFolders(this.onDidChangeWorkspaceFolders.bind(this)),
+        );
+
+        this.interpreterService.onDidChangeInterpreterInformation(
+            this.onDidChangeInterpreterInformation,
+            this,
+            disposables,
         );
 
         if (this.workspaceService.isTrusted) {
@@ -128,7 +138,7 @@ export class LanguageServerWatcher
 
         // Destroy the old language server if it's different.
         if (currentInterpreter && interpreter !== currentInterpreter) {
-            this.stopLanguageServer(lsResource);
+            await this.stopLanguageServer(lsResource);
         }
 
         // If the interpreter is Python 2 and the LS setting is explicitly set to Jedi, turn it off.
@@ -178,6 +188,14 @@ export class LanguageServerWatcher
         return languageServerExtensionManager;
     }
 
+    public async restartLanguageServers(): Promise<void> {
+        this.workspaceLanguageServers.forEach(async (_, resourceString) => {
+            const resource = Uri.parse(resourceString);
+            await this.stopLanguageServer(resource);
+            await this.startLanguageServer(this.languageServerType, resource);
+        });
+    }
+
     // ILanguageServerCache
 
     public async get(resource?: Resource): Promise<ILanguageServer> {
@@ -193,12 +211,12 @@ export class LanguageServerWatcher
 
     // Private methods
 
-    private stopLanguageServer(resource?: Resource): void {
+    private async stopLanguageServer(resource?: Resource): Promise<void> {
         const key = this.getWorkspaceKey(resource, this.languageServerType);
         const languageServerExtensionManager = this.workspaceLanguageServers.get(key);
 
         if (languageServerExtensionManager) {
-            languageServerExtensionManager.stopLanguageServer();
+            await languageServerExtensionManager.stopLanguageServer();
             languageServerExtensionManager.dispose();
             this.workspaceLanguageServers.delete(key);
         }
@@ -233,6 +251,7 @@ export class LanguageServerWatcher
                     this.fileSystem,
                     this.extensions,
                     this.applicationShell,
+                    this.lspNotebooksExperiment,
                 );
                 break;
             case LanguageServerType.None:
@@ -249,7 +268,7 @@ export class LanguageServerWatcher
         const languageServerType = this.configurationService.getSettings(lsResource).languageServer;
 
         if (languageServerType !== this.languageServerType) {
-            this.stopLanguageServer(resource);
+            await this.stopLanguageServer(resource);
             await this.startLanguageServer(languageServerType, lsResource);
         }
     }
@@ -275,6 +294,33 @@ export class LanguageServerWatcher
         return this.activate(event.uri);
     }
 
+    // Watch for interpreter information changes.
+    private async onDidChangeInterpreterInformation(info: PythonEnvironment): Promise<void> {
+        if (!info.envPath || info.envPath === '') {
+            return;
+        }
+
+        // Find the interpreter and workspace that got updated (if any).
+        const iterator = this.workspaceInterpreters.entries();
+
+        let result = iterator.next();
+        let done = result.done || false;
+
+        while (!done) {
+            const [resourcePath, interpreter] = result.value as [string, PythonEnvironment | undefined];
+            const resource = Uri.parse(resourcePath);
+
+            // Restart the language server if the interpreter path changed (#18995).
+            if (info.envPath === interpreter?.envPath && info.path !== interpreter?.path) {
+                await this.activate(resource);
+                done = true;
+            } else {
+                result = iterator.next();
+                done = result.done || false;
+            }
+        }
+    }
+
     // Watch for extension changes.
     private async extensionsChangeHandler(): Promise<void> {
         const languageServerType = this.configurationService.getSettings().languageServer;
@@ -289,9 +335,9 @@ export class LanguageServerWatcher
         // Since Jedi is the only language server type where we instantiate multiple language servers,
         // Make sure to dispose of them only in that scenario.
         if (event.removed.length && this.languageServerType === LanguageServerType.Jedi) {
-            event.removed.forEach((workspace) => {
-                this.stopLanguageServer(workspace.uri);
-            });
+            for (const workspace of event.removed) {
+                await this.stopLanguageServer(workspace.uri);
+            }
         }
     }
 

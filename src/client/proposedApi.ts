@@ -16,7 +16,7 @@ import { IInterpreterService } from './interpreter/contracts';
 import { IServiceContainer } from './ioc/types';
 import { PythonEnvInfo } from './pythonEnvironments/base/info';
 import { getEnvPath } from './pythonEnvironments/base/info/env';
-import { IDiscoveryAPI } from './pythonEnvironments/base/locator';
+import { GetRefreshEnvironmentsOptions, IDiscoveryAPI } from './pythonEnvironments/base/locator';
 
 const onDidInterpretersChangedEvent = new EventEmitter<EnvironmentsChangedParams[]>();
 export function reportInterpretersChanged(e: EnvironmentsChangedParams[]): void {
@@ -57,6 +57,10 @@ export function buildProposedApi(
 
     const proposed: IProposedExtensionAPI = {
         environment: {
+            async getExecutionDetails(resource?: Resource) {
+                const env = await interpreterService.getActiveInterpreter(resource);
+                return env ? { execCommand: [env.path] } : { execCommand: undefined };
+            },
             async getActiveEnvironmentPath(resource?: Resource) {
                 const env = await interpreterService.getActiveInterpreter(resource);
                 if (!env) {
@@ -86,6 +90,7 @@ export function buildProposedApi(
                     metadata: {
                         sysPrefix: env.executable.sysPrefix,
                         bitness: env.arch,
+                        project: env.searchLocation,
                     },
                 };
             },
@@ -97,15 +102,17 @@ export function buildProposedApi(
                 return interpreterPathService.update(resource, ConfigurationTarget.WorkspaceFolder, path);
             },
             async refreshEnvironment(options?: RefreshEnvironmentsOptions) {
-                await discoveryApi.triggerRefresh(options ? { clearCache: options.clearCache } : undefined);
+                await discoveryApi.triggerRefresh(undefined, options ? { clearCache: options.clearCache } : undefined);
                 const paths = discoveryApi.getEnvs().map((e) => getEnvPath(e.executable.filename, e.location));
                 return Promise.resolve(paths);
             },
-            getRefreshPromise(): Promise<void> | undefined {
-                return discoveryApi.refreshPromise;
+            getRefreshPromise(options?: GetRefreshEnvironmentsOptions): Promise<void> | undefined {
+                return discoveryApi.getRefreshPromise(options);
             },
+            onDidChangeExecutionDetails: interpreterService.onDidChangeInterpreterConfiguration,
             onDidEnvironmentsChanged: onDidInterpretersChangedEvent.event,
             onDidActiveEnvironmentChanged: onDidActiveInterpreterChangedEvent.event,
+            onRefreshProgress: discoveryApi.onProgress,
         },
     };
     return proposed;

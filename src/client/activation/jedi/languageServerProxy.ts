@@ -14,7 +14,7 @@ import { IInterpreterPathService, Resource } from '../../common/types';
 import { PythonEnvironment } from '../../pythonEnvironments/info';
 import { captureTelemetry } from '../../telemetry';
 import { EventName } from '../../telemetry/constants';
-import { LanguageClientMiddleware } from '../languageClientMiddleware';
+import { JediLanguageClientMiddleware } from './languageClientMiddleware';
 import { ProgressReporting } from '../progress';
 import { ILanguageClientFactory, ILanguageServerProxy } from '../types';
 import { killPid } from '../../common/process/rawProcessApis';
@@ -23,11 +23,7 @@ import { traceDecoratorError, traceDecoratorVerbose, traceError } from '../../lo
 export class JediLanguageServerProxy implements ILanguageServerProxy {
     public languageClient: LanguageClient | undefined;
 
-    private languageServerTask: Promise<void> | undefined;
-
     private readonly disposables: Disposable[] = [];
-
-    private disposed = false;
 
     private lsVersion: string | undefined;
 
@@ -42,36 +38,9 @@ export class JediLanguageServerProxy implements ILanguageServerProxy {
         };
     }
 
-    @traceDecoratorVerbose('Stopping language server')
+    @traceDecoratorVerbose('Disposing language server')
     public dispose(): void {
-        if (this.languageClient) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const pid: number | undefined = ((this.languageClient as any)._serverProcess as ChildProcess)?.pid;
-            const killServer = () => {
-                if (pid) {
-                    killPid(pid);
-                }
-            };
-
-            // Do not await on this.
-            this.languageClient.stop().then(
-                () => killServer(),
-                (ex) => {
-                    traceError('Stopping language client failed', ex);
-                    killServer();
-                },
-            );
-
-            this.languageClient = undefined;
-            this.languageServerTask = undefined;
-        }
-
-        while (this.disposables.length > 0) {
-            const d = this.disposables.shift()!;
-            d.dispose();
-        }
-
-        this.disposed = true;
+        this.stop().ignoreErrors();
     }
 
     @traceDecoratorError('Failed to start language server')
@@ -87,19 +56,45 @@ export class JediLanguageServerProxy implements ILanguageServerProxy {
         interpreter: PythonEnvironment | undefined,
         options: LanguageClientOptions,
     ): Promise<void> {
-        if (this.languageServerTask) {
-            await this.languageServerTask;
-            return;
+        this.lsVersion =
+            (options.middleware ? (<JediLanguageClientMiddleware>options.middleware).serverVersion : undefined) ??
+            '0.19.3';
+
+        const client = await this.factory.createLanguageClient(resource, interpreter, options);
+        this.registerHandlers(client);
+
+        await client.start();
+
+        this.languageClient = client;
+    }
+
+    @traceDecoratorVerbose('Stopping language server')
+    public async stop(): Promise<void> {
+        while (this.disposables.length > 0) {
+            const d = this.disposables.shift()!;
+            d.dispose();
         }
 
-        this.lsVersion =
-            (options.middleware ? (<LanguageClientMiddleware>options.middleware).serverVersion : undefined) ?? '0.19.3';
+        if (this.languageClient) {
+            const client = this.languageClient;
+            this.languageClient = undefined;
 
-        this.languageClient = await this.factory.createLanguageClient(resource, interpreter, options);
-        this.registerHandlers();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const pid: number | undefined = ((client as any)._serverProcess as ChildProcess)?.pid;
+            const killServer = () => {
+                if (pid) {
+                    killPid(pid);
+                }
+            };
 
-        this.languageServerTask = this.languageClient.start();
-        await this.languageServerTask;
+            try {
+                await client.stop();
+                killServer();
+            } catch (ex) {
+                traceError('Stopping language client failed', ex);
+                killServer();
+            }
+        }
     }
 
     // eslint-disable-next-line class-methods-use-this
@@ -114,13 +109,8 @@ export class JediLanguageServerProxy implements ILanguageServerProxy {
         undefined,
         JediLanguageServerProxy.versionTelemetryProps,
     )
-    private registerHandlers() {
-        if (this.disposed) {
-            // Check if it got disposed in the interim.
-            return;
-        }
-
-        const progressReporting = new ProgressReporting(this.languageClient!);
+    private registerHandlers(client: LanguageClient) {
+        const progressReporting = new ProgressReporting(client);
         this.disposables.push(progressReporting);
 
         this.disposables.push(
@@ -129,7 +119,7 @@ export class JediLanguageServerProxy implements ILanguageServerProxy {
                 // the workspace configurations (to then pick up pythonPath set in the middleware).
                 // This is needed as interpreter changes via the interpreter path service happen
                 // outside of VS Code's settings (which would mean VS Code sends the config updates itself).
-                this.languageClient!.sendNotification(DidChangeConfigurationNotification.type, {
+                client.sendNotification(DidChangeConfigurationNotification.type, {
                     settings: null,
                 });
             }),

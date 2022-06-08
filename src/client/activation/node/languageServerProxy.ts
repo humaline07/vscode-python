@@ -10,7 +10,6 @@ import {
 } from 'vscode-languageclient/node';
 
 import { IExperimentService, IExtensions, IInterpreterPathService, Resource } from '../../common/types';
-import { noop } from '../../common/utils/misc';
 import { IEnvironmentVariablesProvider } from '../../common/variables/types';
 import { PythonEnvironment } from '../../pythonEnvironments/info';
 import { captureTelemetry } from '../../telemetry';
@@ -51,13 +50,9 @@ namespace GetExperimentValue {
 export class NodeLanguageServerProxy implements ILanguageServerProxy {
     public languageClient: LanguageClient | undefined;
 
-    private languageServerTask: Promise<void> | undefined;
-
     private cancellationStrategy: FileBasedCancellationStrategy | undefined;
 
     private readonly disposables: Disposable[] = [];
-
-    private disposed = false;
 
     private lsVersion: string | undefined;
 
@@ -76,24 +71,9 @@ export class NodeLanguageServerProxy implements ILanguageServerProxy {
         };
     }
 
-    @traceDecoratorVerbose('Stopping language server')
+    @traceDecoratorVerbose('Disposing language server')
     public dispose(): void {
-        if (this.languageClient) {
-            // Do not await on this.
-            this.languageClient.stop().then(noop, (ex) => traceError('Stopping language client failed', ex));
-
-            this.languageClient = undefined;
-            this.languageServerTask = undefined;
-        }
-        if (this.cancellationStrategy) {
-            this.cancellationStrategy.dispose();
-            this.cancellationStrategy = undefined;
-        }
-        while (this.disposables.length > 0) {
-            const d = this.disposables.shift()!;
-            d.dispose();
-        }
-        this.disposed = true;
+        this.stop().ignoreErrors();
     }
 
     @traceDecoratorError('Failed to start language server')
@@ -109,28 +89,48 @@ export class NodeLanguageServerProxy implements ILanguageServerProxy {
         interpreter: PythonEnvironment | undefined,
         options: LanguageClientOptions,
     ): Promise<void> {
-        if (this.languageServerTask) {
-            await this.languageServerTask;
-            return;
-        }
-
         const extension = this.extensions.getExtension(PYLANCE_EXTENSION_ID);
         this.lsVersion = extension?.packageJSON.version || '0';
 
         this.cancellationStrategy = new FileBasedCancellationStrategy();
         options.connectionOptions = { cancellationStrategy: this.cancellationStrategy };
 
-        this.languageClient = await this.factory.createLanguageClient(resource, interpreter, options);
-        this.registerHandlers(resource);
+        const client = await this.factory.createLanguageClient(resource, interpreter, options);
+        this.registerHandlers(client, resource);
 
         this.disposables.push(
             this.workspace.onDidGrantWorkspaceTrust(() => {
-                this.languageClient!.sendNotification('python/workspaceTrusted', { isTrusted: true });
+                client.sendNotification('python/workspaceTrusted', { isTrusted: true });
             }),
         );
 
-        this.languageServerTask = this.languageClient.start();
-        await this.languageServerTask;
+        await client.start();
+
+        this.languageClient = client;
+    }
+
+    @traceDecoratorVerbose('Disposing language server')
+    public async stop(): Promise<void> {
+        while (this.disposables.length > 0) {
+            const d = this.disposables.shift()!;
+            d.dispose();
+        }
+
+        if (this.languageClient) {
+            const client = this.languageClient;
+            this.languageClient = undefined;
+
+            try {
+                await client.stop();
+            } catch (ex) {
+                traceError('Stopping language client failed', ex);
+            }
+        }
+
+        if (this.cancellationStrategy) {
+            this.cancellationStrategy.dispose();
+            this.cancellationStrategy = undefined;
+        }
     }
 
     // eslint-disable-next-line class-methods-use-this
@@ -145,13 +145,8 @@ export class NodeLanguageServerProxy implements ILanguageServerProxy {
         undefined,
         NodeLanguageServerProxy.versionTelemetryProps,
     )
-    private registerHandlers(_resource: Resource) {
-        if (this.disposed) {
-            // Check if it got disposed in the interim.
-            return;
-        }
-
-        const progressReporting = new ProgressReporting(this.languageClient!);
+    private registerHandlers(client: LanguageClient, _resource: Resource) {
+        const progressReporting = new ProgressReporting(client);
         this.disposables.push(progressReporting);
 
         this.disposables.push(
@@ -160,20 +155,20 @@ export class NodeLanguageServerProxy implements ILanguageServerProxy {
                 // the workspace configurations (to then pick up pythonPath set in the middleware).
                 // This is needed as interpreter changes via the interpreter path service happen
                 // outside of VS Code's settings (which would mean VS Code sends the config updates itself).
-                this.languageClient!.sendNotification(DidChangeConfigurationNotification.type, {
+                client.sendNotification(DidChangeConfigurationNotification.type, {
                     settings: null,
                 });
             }),
         );
         this.disposables.push(
             this.environmentService.onDidEnvironmentVariablesChange(() => {
-                this.languageClient!.sendNotification(DidChangeConfigurationNotification.type, {
+                client.sendNotification(DidChangeConfigurationNotification.type, {
                     settings: null,
                 });
             }),
         );
 
-        this.languageClient!.onRequest(
+        client.onRequest(
             InExperiment.Method,
             async (params: InExperiment.IRequest): Promise<InExperiment.IResponse> => {
                 const inExperiment = await this.experimentService.inExperiment(params.experimentName);
@@ -181,7 +176,7 @@ export class NodeLanguageServerProxy implements ILanguageServerProxy {
             },
         );
 
-        this.languageClient!.onRequest(
+        client.onRequest(
             GetExperimentValue.Method,
             async <T extends boolean | number | string>(
                 params: GetExperimentValue.IRequest,
@@ -192,7 +187,7 @@ export class NodeLanguageServerProxy implements ILanguageServerProxy {
         );
 
         this.disposables.push(
-            this.languageClient!.onRequest('python/isTrustedWorkspace', async () => ({
+            client.onRequest('python/isTrustedWorkspace', async () => ({
                 isTrusted: this.workspace.isTrusted,
             })),
         );

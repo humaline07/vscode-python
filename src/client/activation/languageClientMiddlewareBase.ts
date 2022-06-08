@@ -83,8 +83,12 @@ export class LanguageClientMiddlewareBase implements Middleware {
                     // value as though it were in the user's settings.json file.
                     // As this is for backwards compatibility, `ConfigService.pythonPath`
                     // can be considered as active interpreter path.
-                    const settingDict: LSPObject = settings[i] as LSPObject;
-                    settingDict.pythonPath = configService.getSettings(uri).pythonPath;
+                    const settingDict: LSPObject & { pythonPath: string; _envPYTHONPATH: string } = settings[
+                        i
+                    ] as LSPObject & { pythonPath: string; _envPYTHONPATH: string };
+
+                    settingDict.pythonPath =
+                        (await this.getPythonPathOverride(uri)) ?? configService.getSettings(uri).pythonPath;
 
                     const env = await envService.getEnvironmentVariables(uri);
                     const envPYTHONPATH = env.PYTHONPATH;
@@ -97,6 +101,11 @@ export class LanguageClientMiddlewareBase implements Middleware {
             return settings;
         },
     };
+
+    // eslint-disable-next-line class-methods-use-this
+    protected async getPythonPathOverride(_uri: Uri | undefined): Promise<string | undefined> {
+        return undefined;
+    }
 
     private get connected(): Promise<boolean> {
         return this.connectedPromise.promise;

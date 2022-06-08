@@ -14,6 +14,7 @@ export interface ILanguageServerWatcher {
     readonly languageServerExtensionManager: ILanguageServerExtensionManager | undefined;
     readonly languageServerType: LanguageServerType;
     startLanguageServer(languageServerType: LanguageServerType, resource?: Resource): Promise<void>;
+    restartLanguageServers(): Promise<void>;
 }
 
 export interface ILanguageServerCapabilities extends ILanguageServer {
@@ -29,7 +30,7 @@ export interface ILanguageServerCapabilities extends ILanguageServer {
  */
 export interface ILanguageServerExtensionManager extends ILanguageServerCapabilities {
     startLanguageServer(resource: Resource, interpreter?: PythonEnvironment): Promise<void>;
-    stopLanguageServer(): void;
+    stopLanguageServer(): Promise<void>;
     canStartLanguageServer(): boolean;
     languageServerNotAvailable(): Promise<void>;
     dispose(): void;

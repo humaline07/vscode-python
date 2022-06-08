@@ -3,13 +3,17 @@
 
 import * as typemoq from 'typemoq';
 import { assert, expect } from 'chai';
-import { ConfigurationTarget, Uri } from 'vscode';
+import { ConfigurationTarget, Uri, Event } from 'vscode';
 import { EnvironmentDetails, IProposedExtensionAPI } from '../client/apiTypes';
 import { IInterpreterPathService } from '../client/common/types';
 import { IInterpreterService } from '../client/interpreter/contracts';
 import { IServiceContainer } from '../client/ioc/types';
 import { buildProposedApi } from '../client/proposedApi';
-import { IDiscoveryAPI } from '../client/pythonEnvironments/base/locator';
+import {
+    IDiscoveryAPI,
+    ProgressNotificationEvent,
+    ProgressReportStage,
+} from '../client/pythonEnvironments/base/locator';
 import { PythonEnvironment } from '../client/pythonEnvironments/info';
 import { PythonEnvKind, PythonEnvSource } from '../client/pythonEnvironments/base/info';
 import { Architecture } from '../client/common/utils/platform';
@@ -20,6 +24,8 @@ suite('Proposed Extension API', () => {
     let discoverAPI: typemoq.IMock<IDiscoveryAPI>;
     let interpreterPathService: typemoq.IMock<IInterpreterPathService>;
     let interpreterService: typemoq.IMock<IInterpreterService>;
+    let onDidExecutionEvent: Event<Uri | undefined>;
+    let onRefreshProgress: Event<ProgressNotificationEvent>;
 
     let proposed: IProposedExtensionAPI;
 
@@ -28,11 +34,43 @@ suite('Proposed Extension API', () => {
         discoverAPI = typemoq.Mock.ofType<IDiscoveryAPI>(undefined, typemoq.MockBehavior.Strict);
         interpreterPathService = typemoq.Mock.ofType<IInterpreterPathService>(undefined, typemoq.MockBehavior.Strict);
         interpreterService = typemoq.Mock.ofType<IInterpreterService>(undefined, typemoq.MockBehavior.Strict);
+        onDidExecutionEvent = typemoq.Mock.ofType<Event<Uri | undefined>>().object;
+        onRefreshProgress = typemoq.Mock.ofType<Event<ProgressNotificationEvent>>().object;
+        interpreterService.setup((i) => i.onDidChangeInterpreterConfiguration).returns(() => onDidExecutionEvent);
 
         serviceContainer.setup((s) => s.get(IInterpreterPathService)).returns(() => interpreterPathService.object);
         serviceContainer.setup((s) => s.get(IInterpreterService)).returns(() => interpreterService.object);
 
+        discoverAPI.setup((d) => d.onProgress).returns(() => onRefreshProgress);
+
         proposed = buildProposedApi(discoverAPI.object, serviceContainer.object);
+    });
+
+    test('Provide a callback for tracking refresh progress', async () => {
+        assert.deepEqual(proposed.environment.onRefreshProgress, onRefreshProgress);
+    });
+
+    test('Provide a callback which is called when execution details changes', async () => {
+        assert.deepEqual(onDidExecutionEvent, proposed.environment.onDidChangeExecutionDetails);
+    });
+
+    test('getExecutionDetails: No resource', async () => {
+        const pythonPath = 'this/is/a/test/path';
+        interpreterService
+            .setup((c) => c.getActiveInterpreter(undefined))
+            .returns(() => Promise.resolve(({ path: pythonPath } as unknown) as PythonEnvironment));
+        const actual = await proposed.environment.getExecutionDetails();
+        assert.deepEqual(actual, { execCommand: [pythonPath] });
+    });
+
+    test('getExecutionDetails: With resource', async () => {
+        const resource = Uri.file(__filename);
+        const pythonPath = 'this/is/a/test/path';
+        interpreterService
+            .setup((c) => c.getActiveInterpreter(resource))
+            .returns(() => Promise.resolve(({ path: pythonPath } as unknown) as PythonEnvironment));
+        const actual = await proposed.environment.getExecutionDetails(resource);
+        assert.deepEqual(actual, { execCommand: [pythonPath] });
     });
 
     test('getActiveInterpreterPath: No resource', async () => {
@@ -81,6 +119,7 @@ suite('Proposed Extension API', () => {
             metadata: {
                 sysPrefix: 'prefix/path',
                 bitness: Architecture.x64,
+                project: Uri.file('path/to/project'),
             },
             envFolderPath: undefined,
         };
@@ -100,6 +139,7 @@ suite('Proposed Extension API', () => {
                         kind: PythonEnvKind.System,
                         arch: Architecture.x64,
                         sysPrefix: 'prefix/path',
+                        searchLocation: Uri.file('path/to/project'),
                     }),
                 ),
             );
@@ -118,6 +158,7 @@ suite('Proposed Extension API', () => {
             metadata: {
                 sysPrefix: 'prefix/path',
                 bitness: Architecture.x64,
+                project: undefined,
             },
             envFolderPath: undefined,
         };
@@ -179,6 +220,7 @@ suite('Proposed Extension API', () => {
             metadata: {
                 sysPrefix: 'prefix/path',
                 bitness: Architecture.x64,
+                project: undefined,
             },
             envFolderPath: undefined,
         };
@@ -291,7 +333,7 @@ suite('Proposed Extension API', () => {
 
     test('refreshInterpreters: common scenario', async () => {
         discoverAPI
-            .setup((d) => d.triggerRefresh(undefined))
+            .setup((d) => d.triggerRefresh(undefined, undefined))
             .returns(() => Promise.resolve())
             .verifiable(typemoq.Times.once());
         discoverAPI
@@ -351,8 +393,10 @@ suite('Proposed Extension API', () => {
 
     test('getRefreshPromise: common scenario', () => {
         const expected = Promise.resolve();
-        discoverAPI.setup((d) => d.refreshPromise).returns(() => expected);
-        const actual = proposed.environment.getRefreshPromise();
+        discoverAPI
+            .setup((d) => d.getRefreshPromise(typemoq.It.isValue({ stage: ProgressReportStage.allPathsDiscovered })))
+            .returns(() => expected);
+        const actual = proposed.environment.getRefreshPromise({ stage: ProgressReportStage.allPathsDiscovered });
 
         // We are comparing instances here, they should be the same instance.
         // So '==' is ok here.

@@ -188,8 +188,8 @@ export interface IPythonSettings {
     readonly terminal: ITerminalSettings;
     readonly sortImports: ISortImportSettings;
     readonly envFile: string;
-    readonly disableInstallationChecks: boolean;
     readonly globalModuleInstallation: boolean;
+    readonly pylanceLspNotebooksEnabled: boolean;
     readonly onDidChange: Event<void>;
     readonly experiments: IExperiments;
     readonly languageServer: LanguageServerType;
@@ -276,6 +276,7 @@ export interface IFormattingSettings {
 
 export interface ITerminalSettings {
     readonly executeInFileDir: boolean;
+    readonly focusAfterLaunch: boolean;
     readonly launchArgs: string[];
     readonly activateEnvironment: boolean;
     readonly activateEnvInCurrentTerminal: boolean;

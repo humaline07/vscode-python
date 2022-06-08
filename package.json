@@ -2,7 +2,7 @@
     "name": "python",
     "displayName": "Python",
     "description": "IntelliSense (Pylance), Linting, Debugging (multi-threaded, remote), Jupyter Notebooks, code formatting, refactoring, unit tests, and more.",
-    "version": "2022.5.0-dev",
+    "version": "2022.7.0-dev",
     "featureFlags": {
         "usingNewInterpreterStorage": true
     },
@@ -42,7 +42,7 @@
         "theme": "dark"
     },
     "engines": {
-        "vscode": "^1.67.0-insider"
+        "vscode": "^1.67.0"
     },
     "keywords": [
         "python",
@@ -403,12 +403,6 @@
                     "default": false,
                     "description": "Enable source map support for meaningful stack traces in error logs.",
                     "scope": "application",
-                    "type": "boolean"
-                },
-                "python.disableInstallationCheck": {
-                    "default": false,
-                    "description": "Whether to check if Python is installed (also warn when using the macOS-installed Python).",
-                    "scope": "resource",
                     "type": "boolean"
                 },
                 "python.envFile": {
@@ -906,6 +900,15 @@
                     "scope": "machine-overridable",
                     "type": "string"
                 },
+                "python.pylanceLspNotebooksEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Determines if Pylance's experimental LSP notebooks support is used or not.",
+                    "scope": "machine",
+                    "tags": [
+                        "experimental"
+                    ]
+                },
                 "python.sortImports.args": {
                     "default": [],
                     "description": "Arguments passed in. Each argument is a separate item in the array.",
@@ -922,6 +925,7 @@
                     "type": "string"
                 },
                 "python.tensorBoard.logDirectory": {
+                    "default": "",
                     "description": "Set this setting to your preferred TensorBoard log directory to skip log directory prompt when starting TensorBoard.",
                     "scope": "application",
                     "type": "string"
@@ -941,6 +945,12 @@
                 "python.terminal.executeInFileDir": {
                     "default": false,
                     "description": "When executing a file in the terminal, whether to use execute in the file's directory, instead of the current open folder.",
+                    "scope": "resource",
+                    "type": "boolean"
+                },
+                "python.terminal.focusAfterLaunch": {
+                    "default": false,
+                    "description": "When launching a python process, whether to focus on the terminal.",
                     "scope": "resource",
                     "type": "boolean"
                 },
@@ -1768,7 +1778,7 @@
         "webpack": "webpack"
     },
     "dependencies": {
-        "@vscode/jupyter-lsp-middleware": "^0.2.42",
+        "@vscode/jupyter-lsp-middleware": "^0.2.46",
         "arch": "^2.1.0",
         "diff-match-patch": "^1.0.0",
         "fs-extra": "^10.0.1",
@@ -1796,10 +1806,10 @@
         "vscode-debugadapter": "^1.28.0",
         "vscode-debugprotocol": "^1.28.0",
         "vscode-extension-telemetry": "0.4.5",
-        "vscode-jsonrpc": "8.0.0-next.8",
-        "vscode-languageclient": "8.0.0-next.18",
-        "vscode-languageserver": "8.0.0-next.14",
-        "vscode-languageserver-protocol": "3.17.0-next.20",
+        "vscode-jsonrpc": "8.0.2-next.1",
+        "vscode-languageclient": "8.0.2-next.3",
+        "vscode-languageserver": "8.0.2-next.3",
+        "vscode-languageserver-protocol": "3.17.2-next.3",
         "vscode-nls": "^5.0.1",
         "vscode-tas-client": "^0.1.22",
         "winreg": "^1.2.4",

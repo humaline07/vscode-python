@@ -9,13 +9,12 @@ import { Resource } from '../common/types';
 import { IComponentAdapter, ICondaService, PythonEnvironmentsChangedEvent } from '../interpreter/contracts';
 import { IServiceManager } from '../ioc/types';
 import { PythonEnvInfo, PythonEnvKind, PythonEnvSource } from './base/info';
-import { IDiscoveryAPI, PythonLocatorQuery } from './base/locator';
+import { IDiscoveryAPI, PythonLocatorQuery, TriggerRefreshOptions } from './base/locator';
 import { isMacDefaultPythonPath } from './base/locators/lowLevel/macDefaultLocator';
 import { isParentPath } from './common/externalDependencies';
 import { EnvironmentType, PythonEnvironment } from './info';
 import { toSemverLikeVersion } from './base/info/pythonVersion';
 import { PythonVersion } from './info/pythonVersion';
-import { EnvironmentInfoServiceQueuePriority, getEnvironmentInfoService } from './base/info/environmentInfoService';
 import { createDeferred } from '../common/utils/async';
 import { PythonEnvCollectionChangedEvent } from './base/watcher';
 import { asyncFilter } from '../common/utils/arrayUtils';
@@ -103,16 +102,16 @@ class ComponentAdapter implements IComponentAdapter {
         });
     }
 
-    public triggerRefresh(query?: PythonLocatorQuery): Promise<void> {
-        return this.api.triggerRefresh(query);
+    public triggerRefresh(query?: PythonLocatorQuery, options?: TriggerRefreshOptions): Promise<void> {
+        return this.api.triggerRefresh(query, options);
     }
 
-    public get refreshPromise() {
-        return this.api.refreshPromise;
+    public getRefreshPromise() {
+        return this.api.getRefreshPromise();
     }
 
-    public get onRefreshStart(): vscode.Event<void> {
-        return this.api.onRefreshStart;
+    public get onProgress() {
+        return this.api.onProgress;
     }
 
     public get onChanged() {
@@ -170,14 +169,6 @@ class ComponentAdapter implements IComponentAdapter {
         if (!env) {
             return undefined;
         }
-        if (env?.executable.sysPrefix) {
-            const execInfoService = getEnvironmentInfoService();
-            const info = await execInfoService.getEnvironmentInfo(env, EnvironmentInfoServiceQueuePriority.High);
-            if (info) {
-                env.executable.sysPrefix = info.executable.sysPrefix;
-                env.version = info.version;
-            }
-        }
         return convertEnvInfo(env);
     }
 
@@ -229,13 +220,14 @@ class ComponentAdapter implements IComponentAdapter {
                 }
             }
         });
-        const initialEnvs = this.api.getEnvs();
+        const initialEnvs = await asyncFilter(this.api.getEnvs(), (e) => filter(convertEnvInfo(e)));
         if (initialEnvs.length > 0) {
             return true;
         }
-        // We should already have initiated discovery. Wait for an env to be added
-        // to the collection until the refresh has finished.
-        await Promise.race([onAddedToCollection.promise, this.api.refreshPromise]);
+        // Wait for an env to be added to the collection until the refresh has finished. Note although it's not
+        // guaranteed we have initiated discovery in this session, we do trigger refresh in the very first session,
+        // when Python is not installed, etc. Assuming list is more or less upto date.
+        await Promise.race([onAddedToCollection.promise, this.api.getRefreshPromise()]);
         const envs = await asyncFilter(this.api.getEnvs(), (e) => filter(convertEnvInfo(e)));
         return envs.length > 0;
     }
@@ -297,7 +289,7 @@ class ComponentAdapter implements IComponentAdapter {
         if (options?.ignoreCache) {
             await this.api.triggerRefresh(query);
         }
-        await this.api.refreshPromise;
+        await this.api.getRefreshPromise();
         const envs = this.api.getEnvs(query);
         return envs.map(convertEnvInfo);
     }

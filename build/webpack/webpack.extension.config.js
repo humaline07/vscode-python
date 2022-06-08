@@ -26,6 +26,7 @@ const config = {
     },
     module: {
         rules: [
+            ...common.getTranlationsLoader(),
             {
                 loader: 'vscode-nls-dev/lib/webpack-loader',
                 options: {

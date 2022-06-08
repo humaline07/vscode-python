@@ -20,7 +20,6 @@ import {
     IInterpreterStatusbarVisibilityFilter,
     PythonEnvironmentsChangedEvent,
 } from './contracts';
-import { PythonLocatorQuery } from '../pythonEnvironments/base/locator';
 import { traceError, traceLog } from '../logging';
 import { Commands, PYTHON_LANGUAGE } from '../common/constants';
 import { reportActiveInterpreterChanged } from '../proposedApi';
@@ -29,6 +28,7 @@ import { Interpreters } from '../common/utils/localize';
 import { sendTelemetryEvent } from '../telemetry';
 import { EventName } from '../telemetry/constants';
 import { cache } from '../common/utils/decorators';
+import { PythonLocatorQuery, TriggerRefreshOptions } from '../pythonEnvironments/base/locator';
 
 type StoredPythonEnvironment = PythonEnvironment & { store?: boolean };
 
@@ -40,16 +40,12 @@ export class InterpreterService implements Disposable, IInterpreterService {
         return this.pyenvs.hasInterpreters(filter);
     }
 
-    public get onRefreshStart(): Event<void> {
-        return this.pyenvs.onRefreshStart;
-    }
-
-    public triggerRefresh(query?: PythonLocatorQuery & { clearCache?: boolean }): Promise<void> {
-        return this.pyenvs.triggerRefresh(query);
+    public triggerRefresh(query?: PythonLocatorQuery, options?: TriggerRefreshOptions): Promise<void> {
+        return this.pyenvs.triggerRefresh(query, options);
     }
 
     public get refreshPromise(): Promise<void> | undefined {
-        return this.pyenvs.refreshPromise;
+        return this.pyenvs.getRefreshPromise();
     }
 
     public get onDidChangeInterpreter(): Event<void> {
@@ -141,6 +137,10 @@ export class InterpreterService implements Disposable, IInterpreterService {
     }
 
     public async getAllInterpreters(resource?: Uri): Promise<PythonEnvironment[]> {
+        // For backwards compatibility with old Jupyter APIs, ensure a
+        // fresh refresh is always triggered when using the API. As it is
+        // no longer auto-triggered by the extension.
+        this.triggerRefresh(undefined, { ifNotTriggerredAlready: true }).ignoreErrors();
         await this.refreshPromise;
         return this.getInterpreters(resource);
     }
@@ -154,6 +154,8 @@ export class InterpreterService implements Disposable, IInterpreterService {
         let path = this.configService.getSettings(resource).pythonPath;
         if (pathUtils.basename(path) === path) {
             // Value can be `python`, `python3`, `python3.9` etc.
+            // Note the following triggers autoselection if no interpreter is explictly
+            // selected, i.e the value is `python`.
             // During shutdown we might not be able to get items out of the service container.
             const pythonExecutionFactory = this.serviceContainer.tryGet<IPythonExecutionFactory>(
                 IPythonExecutionFactory,
@@ -210,7 +212,7 @@ export class InterpreterService implements Disposable, IInterpreterService {
             traceLog('Conda envs without Python are known to not work well; fixing conda environment...');
             const promise = installer.install(Product.python, await this.getInterpreterDetails(pythonPath));
             shell.withProgress(progressOptions, () => promise);
-            promise.then(() => this.triggerRefresh({ clearCache: true }).ignoreErrors());
+            promise.then(() => this.triggerRefresh(undefined, { clearCache: true }).ignoreErrors());
         }
     }
 }

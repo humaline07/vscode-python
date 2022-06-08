@@ -14,13 +14,8 @@ import { PythonEnvironment } from '../../pythonEnvironments/info';
 import { captureTelemetry } from '../../telemetry';
 import { EventName } from '../../telemetry/constants';
 import { Commands } from '../commands';
-import { LanguageClientMiddleware } from '../languageClientMiddleware';
-import {
-    ILanguageServerAnalysisOptions,
-    ILanguageServerManager,
-    ILanguageServerProxy,
-    LanguageServerType,
-} from '../types';
+import { JediLanguageClientMiddleware } from './languageClientMiddleware';
+import { ILanguageServerAnalysisOptions, ILanguageServerManager, ILanguageServerProxy } from '../types';
 import { traceDecoratorError, traceDecoratorVerbose, traceVerbose } from '../../logging';
 
 export class JediLanguageServerManager implements ILanguageServerManager {
@@ -28,7 +23,7 @@ export class JediLanguageServerManager implements ILanguageServerManager {
 
     private interpreter: PythonEnvironment | undefined;
 
-    private middleware: LanguageClientMiddleware | undefined;
+    private middleware: JediLanguageClientMiddleware | undefined;
 
     private disposables: IDisposable[] = [];
 
@@ -59,9 +54,7 @@ export class JediLanguageServerManager implements ILanguageServerManager {
     }
 
     public dispose(): void {
-        if (this.languageProxy) {
-            this.languageProxy.dispose();
-        }
+        this.stopLanguageServer().ignoreErrors();
         JediLanguageServerManager.commandDispose.dispose();
         this.disposables.forEach((d) => d.dispose());
     }
@@ -120,9 +113,7 @@ export class JediLanguageServerManager implements ILanguageServerManager {
     @traceDecoratorError('Failed to restart language server')
     @traceDecoratorVerbose('Restarting language server')
     protected async restartLanguageServer(): Promise<void> {
-        if (this.languageProxy) {
-            this.languageProxy.dispose();
-        }
+        await this.stopLanguageServer();
         await this.startLanguageServer();
     }
 
@@ -136,7 +127,7 @@ export class JediLanguageServerManager implements ILanguageServerManager {
     @traceDecoratorVerbose('Starting language server')
     protected async startLanguageServer(): Promise<void> {
         const options = await this.analysisOptions.getAnalysisOptions();
-        this.middleware = new LanguageClientMiddleware(this.serviceContainer, LanguageServerType.Jedi, this.lsVersion);
+        this.middleware = new JediLanguageClientMiddleware(this.serviceContainer, this.lsVersion);
         options.middleware = this.middleware;
 
         // Make sure the middleware is connected if we restart and we we're already connected.
@@ -146,5 +137,12 @@ export class JediLanguageServerManager implements ILanguageServerManager {
 
         // Then use this middleware to start a new language client.
         await this.languageServerProxy.start(this.resource, this.interpreter, options);
+    }
+
+    @traceDecoratorVerbose('Stopping language server')
+    protected async stopLanguageServer(): Promise<void> {
+        if (this.languageServerProxy) {
+            await this.languageServerProxy.stop();
+        }
     }
 }

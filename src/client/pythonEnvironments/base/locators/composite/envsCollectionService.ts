@@ -3,7 +3,7 @@
 
 import { Event, EventEmitter } from 'vscode';
 import '../../../../common/extensions';
-import { createDeferred } from '../../../../common/utils/async';
+import { createDeferred, Deferred } from '../../../../common/utils/async';
 import { StopWatch } from '../../../../common/utils/stopWatch';
 import { traceError } from '../../../../logging';
 import { sendTelemetryEvent } from '../../../../telemetry';
@@ -11,7 +11,16 @@ import { EventName } from '../../../../telemetry/constants';
 import { normalizePath } from '../../../common/externalDependencies';
 import { PythonEnvInfo } from '../../info';
 import { getEnvPath } from '../../info/env';
-import { IDiscoveryAPI, IPythonEnvsIterator, IResolvingLocator, PythonLocatorQuery } from '../../locator';
+import {
+    GetRefreshEnvironmentsOptions,
+    IDiscoveryAPI,
+    IResolvingLocator,
+    isProgressEvent,
+    ProgressNotificationEvent,
+    ProgressReportStage,
+    PythonLocatorQuery,
+    TriggerRefreshOptions,
+} from '../../locator';
 import { getQueryFilter } from '../../locatorUtils';
 import { PythonEnvCollectionChangedEvent, PythonEnvsWatcher } from '../../watcher';
 import { IEnvsCollectionCache } from './envsCollectionCache';
@@ -21,28 +30,33 @@ import { IEnvsCollectionCache } from './envsCollectionCache';
  */
 export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollectionChangedEvent> implements IDiscoveryAPI {
     /** Keeps track of ongoing refreshes for various queries. */
-    private refreshPromises = new Map<PythonLocatorQuery | undefined, Promise<void>>();
+    private refreshesPerQuery = new Map<PythonLocatorQuery | undefined, Deferred<void>>();
 
     /** Keeps track of scheduled refreshes other than the ongoing one for various queries. */
-    private scheduledRefreshes = new Map<PythonLocatorQuery | undefined, Promise<void>>();
+    private scheduledRefreshesPerQuery = new Map<PythonLocatorQuery | undefined, Promise<void>>();
 
-    private readonly refreshStarted = new EventEmitter<void>();
+    /** Keeps track of promises which resolves when a stage has been reached */
+    private progressPromises = new Map<ProgressReportStage, Deferred<void>>();
 
-    public get onRefreshStart(): Event<void> {
-        return this.refreshStarted.event;
+    /** Keeps track of whether a refresh has been triggered for various queries. */
+    private wasRefreshTriggeredForQuery = new Map<PythonLocatorQuery | undefined, boolean>();
+
+    private readonly progress = new EventEmitter<ProgressNotificationEvent>();
+
+    public get onProgress(): Event<ProgressNotificationEvent> {
+        return this.progress.event;
     }
 
-    public get refreshPromise(): Promise<void> | undefined {
-        return this.refreshPromises.size > 0
-            ? Promise.all(Array.from(this.refreshPromises.values())).then()
-            : undefined;
+    public getRefreshPromise(options?: GetRefreshEnvironmentsOptions): Promise<void> | undefined {
+        const stage = options?.stage ?? ProgressReportStage.discoveryFinished;
+        return this.progressPromises.get(stage)?.promise;
     }
 
     constructor(private readonly cache: IEnvsCollectionCache, private readonly locator: IResolvingLocator) {
         super();
         this.locator.onChanged((event) => {
             const query = undefined; // We can also form a query based on the event, but skip that for simplicity.
-            let scheduledRefresh = this.scheduledRefreshes.get(query);
+            let scheduledRefresh = this.scheduledRefreshesPerQuery.get(query);
             // If there is no refresh scheduled for the query, start a new one.
             if (!scheduledRefresh) {
                 scheduledRefresh = this.scheduleNewRefresh(query);
@@ -55,6 +69,11 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
         this.cache.onChanged((e) => {
             this.fire(e);
         });
+        this.onProgress((event) => {
+            // Resolve progress promise indicating the stage has been reached.
+            this.progressPromises.get(event.stage)?.resolve();
+            this.progressPromises.delete(event.stage);
+        });
     }
 
     public async resolveEnv(path: string): Promise<PythonEnvInfo | undefined> {
@@ -62,7 +81,7 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
         // Note cache may have incomplete info when a refresh is happening.
         // This API is supposed to return complete info by definition, so
         // only use cache if it has complete info on an environment.
-        const cachedEnv = this.cache.getCompleteInfo(path);
+        const cachedEnv = await this.cache.getLatestInfo(path);
         if (cachedEnv) {
             return cachedEnv;
         }
@@ -78,51 +97,40 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
 
     public getEnvs(query?: PythonLocatorQuery): PythonEnvInfo[] {
         const cachedEnvs = this.cache.getAllEnvs();
-        if (cachedEnvs.length === 0 && this.refreshPromises.size === 0) {
-            // We expect a refresh to already be triggered when activating discovery component.
-            traceError('No python is installed or a refresh has not already been triggered');
-            this.triggerRefresh().ignoreErrors();
-        }
         return query ? cachedEnvs.filter(getQueryFilter(query)) : cachedEnvs;
     }
 
-    public triggerRefresh(query?: PythonLocatorQuery & { clearCache?: boolean }): Promise<void> {
+    public triggerRefresh(query?: PythonLocatorQuery, options?: TriggerRefreshOptions): Promise<void> {
+        const stopWatch = new StopWatch();
+        if (options?.ifNotTriggerredAlready) {
+            if (this.wasRefreshTriggered(query)) {
+                return Promise.resolve(); // Refresh was already triggered, return.
+            }
+        }
         let refreshPromise = this.getRefreshPromiseForQuery(query);
         if (!refreshPromise) {
-            refreshPromise = this.startRefresh(query);
+            refreshPromise = this.startRefresh(query, options);
         }
-        return refreshPromise;
+        return refreshPromise.then(() => this.sendTelemetry(query, stopWatch));
     }
 
-    private startRefresh(query: (PythonLocatorQuery & { clearCache?: boolean }) | undefined): Promise<void> {
-        const stopWatch = new StopWatch();
-        const deferred = createDeferred<void>();
-
-        if (query?.clearCache) {
+    private startRefresh(query: PythonLocatorQuery | undefined, options?: TriggerRefreshOptions): Promise<void> {
+        if (options?.clearCache) {
             this.cache.clearCache();
         }
-        // Ensure we set this before we trigger the promise to accurately track when a refresh has started.
-        this.refreshPromises.set(query, deferred.promise);
-        this.refreshStarted.fire();
-        const iterator = this.locator.iterEnvs(query);
-        const promise = this.addEnvsToCacheFromIterator(iterator);
+        this.createProgressStates(query);
+        const promise = this.addEnvsToCacheForQuery(query);
         return promise
             .then(async () => {
-                // Ensure we delete this before we resolve the promise to accurately track when a refresh finishes.
-                this.refreshPromises.delete(query);
-                deferred.resolve();
-                sendTelemetryEvent(EventName.PYTHON_INTERPRETER_DISCOVERY, stopWatch.elapsedTime, {
-                    interpreters: this.cache.getAllEnvs().length,
-                    environmentsWithoutPython: this.cache
-                        .getAllEnvs()
-                        .filter((e) => getEnvPath(e.executable.filename, e.location).pathType === 'envFolderPath')
-                        .length,
-                });
+                this.resolveProgressStates(query);
             })
-            .catch((ex) => deferred.reject(ex));
+            .catch((ex) => {
+                this.rejectProgressStates(query, ex);
+            });
     }
 
-    private async addEnvsToCacheFromIterator(iterator: IPythonEnvsIterator) {
+    private async addEnvsToCacheForQuery(query: PythonLocatorQuery | undefined) {
+        const iterator = this.locator.iterEnvs(query);
         const seen: PythonEnvInfo[] = [];
         const state = {
             done: false,
@@ -132,9 +140,21 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
 
         if (iterator.onUpdated !== undefined) {
             const listener = iterator.onUpdated(async (event) => {
-                if (event === null) {
-                    state.done = true;
-                    listener.dispose();
+                if (isProgressEvent(event)) {
+                    switch (event.stage) {
+                        case ProgressReportStage.discoveryFinished:
+                            state.done = true;
+                            listener.dispose();
+                            break;
+                        case ProgressReportStage.allPathsDiscovered:
+                            if (!query) {
+                                // Only mark as all paths discovered when querying for all envs.
+                                this.progress.fire(event);
+                            }
+                            break;
+                        default:
+                            this.progress.fire(event);
+                    }
                 } else {
                     state.pending += 1;
                     this.cache.updateEnv(seen[event.index], event.update);
@@ -148,6 +168,7 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
                 }
             });
         } else {
+            this.progress.fire({ stage: ProgressReportStage.discoveryStarted });
             updatesDone.resolve();
         }
 
@@ -167,7 +188,11 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
         // Even if no refresh is running for this exact query, there might be other
         // refreshes running for a superset of this query. For eg. the `undefined` query
         // is a superset for every other query, only consider that for simplicity.
-        return this.refreshPromises.get(query) ?? this.refreshPromises.get(undefined);
+        return this.refreshesPerQuery.get(query)?.promise ?? this.refreshesPerQuery.get(undefined)?.promise;
+    }
+
+    private wasRefreshTriggered(query?: PythonLocatorQuery) {
+        return this.wasRefreshTriggeredForQuery.get(query) ?? this.wasRefreshTriggeredForQuery.get(undefined);
     }
 
     /**
@@ -181,11 +206,54 @@ export class EnvsCollectionService extends PythonEnvsWatcher<PythonEnvCollection
         } else {
             nextRefreshPromise = refreshPromise.then(() => {
                 // No more scheduled refreshes for this query as we're about to start the scheduled one.
-                this.scheduledRefreshes.delete(query);
+                this.scheduledRefreshesPerQuery.delete(query);
                 this.startRefresh(query);
             });
-            this.scheduledRefreshes.set(query, nextRefreshPromise);
+            this.scheduledRefreshesPerQuery.set(query, nextRefreshPromise);
         }
         return nextRefreshPromise;
+    }
+
+    private createProgressStates(query: PythonLocatorQuery | undefined) {
+        this.refreshesPerQuery.set(query, createDeferred<void>());
+        this.wasRefreshTriggeredForQuery.set(query, true);
+        Object.values(ProgressReportStage).forEach((stage) => {
+            this.progressPromises.set(stage, createDeferred<void>());
+        });
+        if (ProgressReportStage.allPathsDiscovered && query) {
+            // Only mark as all paths discovered when querying for all envs.
+            this.progressPromises.delete(ProgressReportStage.allPathsDiscovered);
+        }
+    }
+
+    private rejectProgressStates(query: PythonLocatorQuery | undefined, ex: Error) {
+        this.refreshesPerQuery.get(query)?.reject(ex);
+        this.refreshesPerQuery.delete(query);
+        Object.values(ProgressReportStage).forEach((stage) => {
+            this.progressPromises.get(stage)?.reject(ex);
+            this.progressPromises.delete(stage);
+        });
+    }
+
+    private resolveProgressStates(query: PythonLocatorQuery | undefined) {
+        this.refreshesPerQuery.get(query)?.resolve();
+        this.refreshesPerQuery.delete(query);
+        // Refreshes per stage are resolved using progress events instead.
+        const isRefreshComplete = Array.from(this.refreshesPerQuery.values()).every((d) => d.completed);
+        if (isRefreshComplete) {
+            this.progress.fire({ stage: ProgressReportStage.discoveryFinished });
+        }
+    }
+
+    private sendTelemetry(query: PythonLocatorQuery | undefined, stopWatch: StopWatch) {
+        if (!query && !this.wasRefreshTriggered(query)) {
+            // Intent is to capture time taken for discovery of all envs to complete the first time.
+            sendTelemetryEvent(EventName.PYTHON_INTERPRETER_DISCOVERY, stopWatch.elapsedTime, {
+                interpreters: this.cache.getAllEnvs().length,
+                environmentsWithoutPython: this.cache
+                    .getAllEnvs()
+                    .filter((e) => getEnvPath(e.executable.filename, e.location).pathType === 'envFolderPath').length,
+            });
+        }
     }
 }

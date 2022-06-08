@@ -111,6 +111,10 @@ export class SetInterpreterCommand extends BaseInterpreterSelectorCommand {
         // times so that the visible items do not change.
         const preserveOrderWhenFiltering = !!this.interpreterService.refreshPromise;
         const suggestions = this.getItems(state.workspace);
+        // Discovery is no longer guranteed to be auto-triggered on extension load, so trigger it when
+        // user interacts with the interpreter picker but only once per session. Users can rely on the
+        // refresh button if they want to trigger it more than once.
+        this.interpreterService.triggerRefresh(undefined, { ifNotTriggerredAlready: true }).ignoreErrors();
         state.path = undefined;
         const currentInterpreterPathDisplay = this.pathUtils.getDisplayName(
             this.configurationService.getSettings(state.workspace).pythonPath,
@@ -324,6 +328,17 @@ export class SetInterpreterCommand extends BaseInterpreterSelectorCommand {
             if (index !== -1) {
                 items[index] = recommended;
             }
+            items.forEach((item, i) => {
+                if (
+                    isInterpreterQuickPickItem(item) &&
+                    item.interpreter.path === 'python' &&
+                    item.interpreter.envType === EnvironmentType.Conda
+                ) {
+                    if (!items[i].label.includes(Octicons.Warning)) {
+                        items[i].label = `${Octicons.Warning} ${items[i].label}`;
+                    }
+                }
+            });
         }
     }
 
@@ -375,7 +390,6 @@ export class SetInterpreterCommand extends BaseInterpreterSelectorCommand {
         if (!targetConfig) {
             return;
         }
-
         const { configTarget } = targetConfig[0];
         const wkspace = targetConfig[0].folderUri;
         const interpreterState: InterpreterStateArgs = { path: undefined, workspace: wkspace };
