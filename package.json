@@ -2,7 +2,7 @@
     "name": "python",
     "displayName": "Python",
     "description": "IntelliSense (Pylance), Linting, Debugging (multi-threaded, remote), Jupyter Notebooks, code formatting, refactoring, unit tests, and more.",
-    "version": "2022.13.0-dev",
+    "version": "2022.15.0-dev",
     "featureFlags": {
         "usingNewInterpreterStorage": true
     },
@@ -916,12 +916,9 @@
                 },
                 "python.pylanceLspNotebooksEnabled": {
                     "type": "boolean",
-                    "default": false,
+                    "default": true,
                     "description": "%python.pylanceLspNotebooksEnabled.description%",
-                    "scope": "machine",
-                    "tags": [
-                        "experimental"
-                    ]
+                    "scope": "machine"
                 },
                 "python.sortImports.args": {
                     "default": [],
@@ -1198,11 +1195,14 @@
                         "properties": {
                             "args": {
                                 "default": [],
-                                "description": "Command line arguments passed to the program",
+                                "description": "Command line arguments passed to the program.",
                                 "items": {
                                     "type": "string"
                                 },
-                                "type": "array"
+                                "type": [
+                                    "array",
+                                    "string"
+                                ]
                             },
                             "autoReload": {
                                 "default": {},
@@ -1818,7 +1818,7 @@
         "vscode-languageserver": "8.0.2-next.5",
         "vscode-languageserver-protocol": "3.17.2-next.6",
         "vscode-nls": "^5.0.1",
-        "vscode-tas-client": "^0.1.22",
+        "vscode-tas-client": "^0.1.63",
         "winreg": "^1.2.4",
         "xml2js": "^0.4.19",
         "which": "^2.0.2"
@@ -1849,7 +1849,7 @@
         "@types/xml2js": "^0.4.2",
         "@typescript-eslint/eslint-plugin": "^3.7.0",
         "@typescript-eslint/parser": "^3.7.0",
-        "@vscode/telemetry-extractor": "^1.9.7",
+        "@vscode/telemetry-extractor": ">=1.9.8",
         "@vscode/test-electron": "^2.1.3",
         "chai": "^4.1.2",
         "chai-arrays": "^2.0.0",
@@ -1895,7 +1895,6 @@
         "vsce": "^2.6.6",
         "vscode-debugadapter-testsupport": "^1.27.0",
         "vscode-nls-dev": "^4.0.0",
-        "vscode-telemetry-extractor": "^1.9.5",
         "webpack": "^5.70.0",
         "webpack-bundle-analyzer": "^4.5.0",
         "webpack-cli": "^4.9.2",
